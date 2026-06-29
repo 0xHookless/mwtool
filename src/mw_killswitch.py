@@ -374,7 +374,8 @@ class App(tk.Tk):
         
         try:
             ssl_client = mitm_ctx.wrap_socket(client_sock, server_side=True)
-        except Exception:
+        except Exception as e:
+            self.log_msg(f"[ERROR] MITM Handshake failed: {e}")
             return
         
         try:
