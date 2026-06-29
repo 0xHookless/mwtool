@@ -144,7 +144,7 @@ class App(tk.Tk):
 
     def destroy(self):
         try:
-            set_proxy(False)
+            self.restore_startup_ini()
         except:
             pass
         if hasattr(self, 'mitm_proc') and self.mitm_proc:
@@ -172,7 +172,34 @@ class App(tk.Tk):
         return False
 
     def run_setup_proxy(self):
-        self.log_msg("[SETUP] Config not found. Initializing proxy...")
+        self.log_msg("[SETUP] Config not found. Initializing setup mode...")
+        
+        # Modify startup.ini to force Java to use the proxy
+        appdata = os.environ.get('APPDATA', '')
+        mw_dir = os.path.join(appdata, 'MotiveWave')
+        startup_ini = os.path.join(mw_dir, 'startup.ini')
+        startup_bak = os.path.join(mw_dir, 'startup.ini.bak')
+        
+        if os.path.exists(startup_ini):
+            try:
+                import shutil
+                shutil.copy2(startup_ini, startup_bak)
+                with open(startup_ini, 'r') as f:
+                    lines = f.readlines()
+                with open(startup_ini, 'w') as f:
+                    for line in lines:
+                        if line.startswith('VM_ARGS='):
+                            # Add proxy settings and tell Java to use Windows cert store
+                            proxy_args = " -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8080 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8080 -Djavax.net.ssl.trustStoreType=Windows-ROOT"
+                            f.write(line.strip() + proxy_args + "\n")
+                        else:
+                            f.write(line)
+                self.log_msg("[SETUP] Injected proxy settings into MotiveWave startup.ini")
+            except Exception as e:
+                self.log_msg(f"[ERROR] Failed to modify startup.ini: {e}")
+        else:
+            self.log_msg("[WARNING] MotiveWave startup.ini not found. Proxy might not be picked up.")
+
         # Write capture_addon.py
         addon_path = os.path.join(app_dir, "capture_addon.py")
         addon_code = f"""
@@ -183,20 +210,20 @@ from mitmproxy import http
 
 class CaptureRelease:
     def request(self, flow: http.HTTPFlow):
-        if "/license/release.do" in flow.request.path:
+        if "/license/release.do" in flow.request.path or "/license/validate.do" in flow.request.path or "/license/update_service.do" in flow.request.path:
             body = flow.request.get_text()
             params = urllib.parse.parse_qs(body)
             profile_id = params.get("profile_id", [""])[0]
             machine_id = params.get("machine_id", [""])[0]
-            build = params.get("build", [""])[0]
-            version = params.get("version", [""])[0]
+            build = params.get("build", ["640"])[0]
+            version = params.get("version", ["7.0.26"])[0]
             
             if profile_id and machine_id:
                 config = {{
                     "profile_id": profile_id,
                     "machine_id": machine_id,
-                    "build": build or "640",
-                    "version": version or "7.0.26"
+                    "build": build,
+                    "version": version
                 }}
                 config_path = r"{config_path}"
                 with open(config_path, "w") as f:
@@ -212,15 +239,12 @@ addons = [CaptureRelease()]
                 f.write(addon_code.strip())
         except Exception as e:
             self.log_msg(f"[ERROR] Failed to write setup helper: {e}")
+            self.restore_startup_ini()
             return
             
-        # Enable proxy
-        set_proxy(True)
-        self.log_msg("[SETUP] Windows proxy set to 127.0.0.1:8080")
         self.log_msg("[SETUP] Starting mitmdump backend...")
         
         try:
-            # Start mitmdump in background
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -229,16 +253,28 @@ addons = [CaptureRelease()]
                 startupinfo=startupinfo,
                 cwd=app_dir
             )
-            self.log_msg("[SETUP] Proxy running. PLEASE CLOSE MOTIVEWAVE NOW.")
-            self.log_msg("[SETUP] Once MotiveWave sends the release command, setup completes.")
+            self.log_msg("[SETUP] Proxy running. PLEASE START MOTIVEWAVE, THEN CLOSE IT.")
             
-            # Start monitoring thread for config.json creation
             threading.Thread(target=self.monitor_setup, args=(addon_path,), daemon=True).start()
             
         except Exception as e:
             self.log_msg(f"[ERROR] Could not start mitmdump: {e}")
             self.log_msg("[INFO] Ensure mitmproxy is installed and in system PATH.")
-            set_proxy(False)
+            self.restore_startup_ini()
+
+    def restore_startup_ini(self):
+        appdata = os.environ.get('APPDATA', '')
+        mw_dir = os.path.join(appdata, 'MotiveWave')
+        startup_ini = os.path.join(mw_dir, 'startup.ini')
+        startup_bak = os.path.join(mw_dir, 'startup.ini.bak')
+        if os.path.exists(startup_bak):
+            try:
+                import shutil
+                shutil.copy2(startup_bak, startup_ini)
+                os.remove(startup_bak)
+                self.log_msg("[SETUP] Restored original MotiveWave startup.ini")
+            except Exception as e:
+                pass
 
     def monitor_setup(self, addon_path):
         import time
@@ -259,8 +295,8 @@ addons = [CaptureRelease()]
             except:
                 pass
             self.mitm_proc = None
-        set_proxy(False)
-        self.log_msg("[SETUP] System proxy disabled.")
+            
+        self.restore_startup_ini()
         
         try:
             if os.path.exists(addon_path):
@@ -290,7 +326,7 @@ addons = [CaptureRelease()]
         if not self.config_loaded:
             self.status_var.set("STATUS: SETUP REQUIRED")
             self.btn.config(text="WAITING FOR LICENSE CAPTURE...", bg="#1a1a1a", state=tk.DISABLED)
-            self.desc_var.set("Please CLOSE MotiveWave to capture license details.\nSystem proxy is enabled in the background.")
+            self.desc_var.set("Please START MotiveWave, then CLOSE it to capture details.\nGhostWave is intercepting the JVM traffic.")
             return
 
         blocked = self.check()
