@@ -46,5 +46,4 @@ python src/data_downloader.py ENQU6.CME --type bar
 # Download only tick data
 python src/data_downloader.py ENQU6.CME --type tick
 ```
-
-yeah this gives you edge too
+gives you edge too
