@@ -243,6 +243,14 @@ class App(tk.Tk):
                           
             # Inject directly into MotiveWave's bundled Java cacerts
             try:
+                java_paths = [
+                    r"C:\Program Files\Java",
+                    r"C:\Program Files (x86)\Java",
+                    r"C:\Program Files\Eclipse Foundation",
+                    r"C:\Program Files\Eclipse Adoptium",
+                    r"C:\Program Files\Amazon Corretto",
+                ]
+                
                 mw_installs = [
                     r"C:\Program Files\MotiveWave",
                     r"C:\Program Files (x86)\MotiveWave",
@@ -251,15 +259,22 @@ class App(tk.Tk):
                 keytool_path = None
                 cacerts_path = None
                 
+                # Find cacerts in MotiveWave
                 for path in mw_installs:
+                    if os.path.exists(path):
+                        for root, dirs, files in os.walk(path):
+                            if "cacerts" in files:
+                                cacerts_path = os.path.join(root, "cacerts")
+                                break
+                                
+                # Find keytool anywhere
+                for path in mw_installs + java_paths:
                     if os.path.exists(path):
                         for root, dirs, files in os.walk(path):
                             if "keytool.exe" in files:
                                 keytool_path = os.path.join(root, "keytool.exe")
-                            if "cacerts" in files:
-                                cacerts_path = os.path.join(root, "cacerts")
-                                
-                if keytool_path and cacerts_path:
+                                break
+                    if keytool_path: break
                     # Remove existing alias if present
                     subprocess.run(
                         [keytool_path, "-delete", "-alias", "ghostwave", "-keystore", cacerts_path, "-storepass", "changeit"],
