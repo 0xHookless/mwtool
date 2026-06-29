@@ -20,5 +20,8 @@ MotiveWave pings its licensing server every 60 seconds. This tool simply adds a 
 If you prefer to compile the python script yourself:
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --uac-admin --name "MW Session Blocker" src/mw_killswitch.py
+pyinstaller --onefile --windowed --uac-admin --name "GhostWave" --icon "ghostwave.ico" src/mw_killswitch.py
 ```
+
+## Preview
+![App in Use](Screenshot.png)
