@@ -244,12 +244,40 @@ addons = [CaptureRelease()]
             
         self.log_msg("[SETUP] Starting mitmdump backend...")
         
+        # Determine mitmdump path
+        mitmdump_exe = "mitmdump"
+        # Check if mitmdump is in path or in local bin folder
+        if subprocess.run(["where", "mitmdump"], capture_output=True).returncode != 0:
+            local_bin = os.path.join(app_dir, "bin")
+            mitmdump_exe = os.path.join(local_bin, "mitmdump.exe")
+            if not os.path.exists(mitmdump_exe):
+                self.log_msg("[SETUP] mitmproxy not found. Downloading portable version...")
+                try:
+                    os.makedirs(local_bin, exist_ok=True)
+                    import urllib.request
+                    import zipfile
+                    
+                    # Direct static link to a known good older release
+                    zip_url = "https://downloads.mitmproxy.org/9.0.1/mitmproxy-9.0.1-windows.zip"
+                    zip_path = os.path.join(local_bin, "mitmproxy.zip")
+                    
+                    urllib.request.urlretrieve(zip_url, zip_path)
+                    self.log_msg("[SETUP] Extracting mitmproxy...")
+                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                        zip_ref.extract("mitmdump.exe", local_bin)
+                    os.remove(zip_path)
+                    self.log_msg("[SETUP] mitmproxy ready.")
+                except Exception as e:
+                    self.log_msg(f"[ERROR] Failed to download mitmproxy: {e}")
+                    self.restore_startup_ini()
+                    return
+
         try:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
             self.mitm_proc = subprocess.Popen(
-                ["mitmdump", "-p", "8080", "-s", addon_path, "--ssl-insecure"],
+                [mitmdump_exe, "-p", "8080", "-s", addon_path, "--ssl-insecure"],
                 startupinfo=startupinfo,
                 cwd=app_dir
             )
@@ -259,7 +287,6 @@ addons = [CaptureRelease()]
             
         except Exception as e:
             self.log_msg(f"[ERROR] Could not start mitmdump: {e}")
-            self.log_msg("[INFO] Ensure mitmproxy is installed and in system PATH.")
             self.restore_startup_ini()
 
     def restore_startup_ini(self):
