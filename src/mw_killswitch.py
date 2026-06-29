@@ -232,12 +232,51 @@ class App(tk.Tk):
                 .sign(ca_key, hashes.SHA256())
             )
             
-            # Save CA cert and install into Windows trust store
+            # Save CA cert
             ca_cert_path = os.path.join(app_dir, "ghostwave_ca.cer")
             with open(ca_cert_path, "wb") as f:
                 f.write(ca_cert.public_bytes(serialization.Encoding.DER))
+                
+            # Install into Windows trust store (just in case)
             subprocess.run(["certutil", "-addstore", "root", ca_cert_path],
                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                          
+            # Inject directly into MotiveWave's bundled Java cacerts
+            try:
+                mw_installs = [
+                    r"C:\Program Files\MotiveWave",
+                    r"C:\Program Files (x86)\MotiveWave",
+                    os.path.join(os.environ.get('LOCALAPPDATA', ''), 'MotiveWave')
+                ]
+                keytool_path = None
+                cacerts_path = None
+                
+                for path in mw_installs:
+                    if os.path.exists(path):
+                        for root, dirs, files in os.walk(path):
+                            if "keytool.exe" in files:
+                                keytool_path = os.path.join(root, "keytool.exe")
+                            if "cacerts" in files:
+                                cacerts_path = os.path.join(root, "cacerts")
+                                
+                if keytool_path and cacerts_path:
+                    # Remove existing alias if present
+                    subprocess.run(
+                        [keytool_path, "-delete", "-alias", "ghostwave", "-keystore", cacerts_path, "-storepass", "changeit"],
+                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    # Import our new CA cert
+                    result = subprocess.run(
+                        [keytool_path, "-import", "-trustcacerts", "-alias", "ghostwave", "-file", ca_cert_path, "-keystore", cacerts_path, "-storepass", "changeit", "-noprompt"],
+                        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW
+                    )
+                    if result.returncode == 0:
+                        self.log_msg("[SETUP] SSL cert injected into Java keystore.")
+                    else:
+                        self.log_msg(f"[WARNING] Keystore injection failed: {result.stderr.decode('utf-8', 'ignore')}")
+            except Exception as e:
+                self.log_msg(f"[WARNING] Could not inject Java keystore: {e}")
+                
             self.log_msg("[SETUP] SSL certificate installed.")
             
             # Generate a cert for motivewave.com signed by our CA
