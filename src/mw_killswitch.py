@@ -5,6 +5,11 @@ import subprocess
 import ctypes
 import threading
 import math
+import json
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 hosts = r"C:\Windows\System32\drivers\etc\hosts"
 marker = "# MW_BLOCK"
@@ -14,6 +19,31 @@ block_entries = [
     "::1 www.motivewave.com",
     "::1 motivewave.com",
 ]
+
+if getattr(sys, 'frozen', False):
+    app_dir = os.path.dirname(sys.executable)
+else:
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(app_dir, "config.json")
+
+def set_proxy(enable=True, host="127.0.0.1:8080"):
+    if not winreg:
+        return
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_WRITE)
+        if enable:
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, host)
+            winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "localhost;127.0.0.1;<local>")
+        else:
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+        winreg.CloseKey(key)
+        
+        # Notify WinInet of the change
+        ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0) # INTERNET_OPTION_SETTINGS_CHANGED
+        ctypes.windll.wininet.InternetSetOptionW(0, 37, 0, 0) # INTERNET_OPTION_REFRESH
+    except Exception as e:
+        print(f"Error setting proxy: {e}")
 
 class App(tk.Tk):
     def __init__(self):
@@ -99,7 +129,147 @@ class App(tk.Tk):
         self.console.insert(tk.END, "Ready.\n")
         self.console.config(state=tk.DISABLED)
         
+        self.config_loaded = False
+        self.profile_id = ""
+        self.machine_id = ""
+        self.build = "640"
+        self.version = "7.0.26"
+        self.mitm_proc = None
+        
+        self.load_config()
         self.update_ui()
+        
+        if not self.config_loaded:
+            threading.Thread(target=self.run_setup_proxy, daemon=True).start()
+
+    def destroy(self):
+        try:
+            set_proxy(False)
+        except:
+            pass
+        if hasattr(self, 'mitm_proc') and self.mitm_proc:
+            try:
+                self.mitm_proc.terminate()
+            except:
+                pass
+        super().destroy()
+
+    def load_config(self):
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    cfg = json.load(f)
+                    self.profile_id = cfg.get("profile_id", "")
+                    self.machine_id = cfg.get("machine_id", "")
+                    self.build = cfg.get("build", "640")
+                    self.version = cfg.get("version", "7.0.26")
+                    if self.profile_id and self.machine_id:
+                        self.config_loaded = True
+                        return True
+        except Exception as e:
+            print(f"Error loading config: {e}")
+        self.config_loaded = False
+        return False
+
+    def run_setup_proxy(self):
+        self.log_msg("[SETUP] Config not found. Initializing proxy...")
+        # Write capture_addon.py
+        addon_path = os.path.join(app_dir, "capture_addon.py")
+        addon_code = f"""
+import urllib.parse
+import json
+import os
+from mitmproxy import http
+
+class CaptureRelease:
+    def request(self, flow: http.HTTPFlow):
+        if "/license/release.do" in flow.request.path:
+            body = flow.request.get_text()
+            params = urllib.parse.parse_qs(body)
+            profile_id = params.get("profile_id", [""])[0]
+            machine_id = params.get("machine_id", [""])[0]
+            build = params.get("build", [""])[0]
+            version = params.get("version", [""])[0]
+            
+            if profile_id and machine_id:
+                config = {{
+                    "profile_id": profile_id,
+                    "machine_id": machine_id,
+                    "build": build or "640",
+                    "version": version or "7.0.26"
+                }}
+                config_path = r"{config_path}"
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=4)
+                
+                import sys
+                sys.exit(0)
+
+addons = [CaptureRelease()]
+"""
+        try:
+            with open(addon_path, "w") as f:
+                f.write(addon_code.strip())
+        except Exception as e:
+            self.log_msg(f"[ERROR] Failed to write setup helper: {e}")
+            return
+            
+        # Enable proxy
+        set_proxy(True)
+        self.log_msg("[SETUP] Windows proxy set to 127.0.0.1:8080")
+        self.log_msg("[SETUP] Starting mitmdump backend...")
+        
+        try:
+            # Start mitmdump in background
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            self.mitm_proc = subprocess.Popen(
+                ["mitmdump", "-p", "8080", "-s", addon_path, "--ssl-insecure"],
+                startupinfo=startupinfo,
+                cwd=app_dir
+            )
+            self.log_msg("[SETUP] Proxy running. PLEASE CLOSE MOTIVEWAVE NOW.")
+            self.log_msg("[SETUP] Once MotiveWave sends the release command, setup completes.")
+            
+            # Start monitoring thread for config.json creation
+            threading.Thread(target=self.monitor_setup, args=(addon_path,), daemon=True).start()
+            
+        except Exception as e:
+            self.log_msg(f"[ERROR] Could not start mitmdump: {e}")
+            self.log_msg("[INFO] Ensure mitmproxy is installed and in system PATH.")
+            set_proxy(False)
+
+    def monitor_setup(self, addon_path):
+        import time
+        while True:
+            if os.path.exists(config_path):
+                self.log_msg("[SETUP] Configuration captured successfully!")
+                break
+            # Check if process died
+            if self.mitm_proc and self.mitm_proc.poll() is not None:
+                self.log_msg("[ERROR] Proxy process terminated unexpectedly.")
+                break
+            time.sleep(0.5)
+            
+        # Cleanup
+        if self.mitm_proc:
+            try:
+                self.mitm_proc.terminate()
+            except:
+                pass
+            self.mitm_proc = None
+        set_proxy(False)
+        self.log_msg("[SETUP] System proxy disabled.")
+        
+        try:
+            if os.path.exists(addon_path):
+                os.remove(addon_path)
+        except:
+            pass
+            
+        if self.load_config():
+            self.after(0, self.update_ui)
 
     def get_pos(self, e):
         self.xwin = self.winfo_x() - e.x_root
@@ -117,6 +287,12 @@ class App(tk.Tk):
             return False
 
     def update_ui(self):
+        if not self.config_loaded:
+            self.status_var.set("STATUS: SETUP REQUIRED")
+            self.btn.config(text="WAITING FOR LICENSE CAPTURE...", bg="#1a1a1a", state=tk.DISABLED)
+            self.desc_var.set("Please CLOSE MotiveWave to capture license details.\nSystem proxy is enabled in the background.")
+            return
+
         blocked = self.check()
         self.canvas.delete("all")
         if blocked:
@@ -186,10 +362,10 @@ class App(tk.Tk):
                 import urllib.parse
                 url = "https://www.motivewave.com/license/release.do"
                 data = {
-                    "build": "640",
-                    "profile_id": "428/:974544.:245",
-                    "machine_id": "097/823/19314<90266",
-                    "version": "7.0.26"
+                    "build": self.build,
+                    "profile_id": self.profile_id,
+                    "machine_id": self.machine_id,
+                    "version": self.version
                 }
                 encoded_data = urllib.parse.urlencode(data).encode('utf-8')
                 req = urllib.request.Request(url, data=encoded_data)
