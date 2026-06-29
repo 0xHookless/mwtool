@@ -18,7 +18,7 @@ block_entries = [
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("400x420")
+        self.geometry("400x330")
         self.configure(bg="#0a0a0a")
         self.overrideredirect(True)
         
@@ -70,9 +70,9 @@ class App(tk.Tk):
         self.desc_lbl.pack(pady=5)
         
         # Console output
-        self.console = tk.Text(self, bg="#050505", fg="#00ff00", font=("Consolas", 8), bd=1, relief="solid", highlightbackground="#222222", highlightthickness=1)
-        self.console.pack(pady=(5, 15), padx=15, fill="both", expand=True)
-        self.console.insert(tk.END, "[*] GhostWave Initialized...\n")
+        self.console = tk.Text(self, bg="#0e0e0e", fg="#999999", font=("Segoe UI", 7), bd=0, relief="flat", highlightthickness=0, height=4)
+        self.console.pack(pady=(0, 10), padx=20, fill="x")
+        self.console.insert(tk.END, "Ready.\n")
         self.console.config(state=tk.DISABLED)
         
         self.update_ui()
@@ -172,17 +172,17 @@ class App(tk.Tk):
                 req.add_header('User-Agent', 'Java-http-client/26')
                 req.add_header('Content-Type', 'application/x-www-form-urlencoded')
                 
-                self.log_msg(f"\n[+] POST /license/release.do")
-                self.log_msg(f"[*] Payload: {data}")
+                self.log_msg(f"\n[INFO] POST request sent to www.motivewave.com/license/release.do")
+                self.log_msg(f"[INFO] Request Body: {data}")
                 
                 response = urllib.request.urlopen(req, timeout=5)
                 status = response.getcode()
                 resp_body = response.read().decode('utf-8').replace('\n', '').strip()
                 
-                self.log_msg(f"[+] Status: {status} OK")
-                self.log_msg(f"[+] Response: {resp_body}")
+                self.log_msg(f"[SUCCESS] Server connection established (Status: {status})")
+                self.log_msg(f"[SUCCESS] Server response: {resp_body}")
             except Exception as e:
-                self.log_msg(f"[-] API Error: {str(e)}")
+                self.log_msg(f"[ERROR] API request failed: {str(e)}")
 
         try:
             with open(hosts, 'r') as f:
