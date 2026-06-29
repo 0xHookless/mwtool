@@ -3,6 +3,8 @@
   <h1>GhostWave</h1>
 </div>
 
+dm syskey1843 on discord if you need help
+
 App to quickly block Motivewave's heartbeat and emulate the "license no longer in use" api request, allowing you to use your license on another machine without having to close the app on your current one.
 
 or share ur license with a friend and use it at the same time as them.
