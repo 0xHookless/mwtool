@@ -18,7 +18,7 @@ block_entries = [
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("400x260")
+        self.geometry("400x420")
         self.configure(bg="#0a0a0a")
         self.overrideredirect(True)
         
@@ -68,6 +68,12 @@ class App(tk.Tk):
         self.desc_var = tk.StringVar()
         self.desc_lbl = tk.Label(self, textvariable=self.desc_var, font=("Segoe UI", 9), bg="#0a0a0a", fg="#777777")
         self.desc_lbl.pack(pady=5)
+        
+        # Console output
+        self.console = tk.Text(self, bg="#050505", fg="#00ff00", font=("Consolas", 8), bd=1, relief="solid", highlightbackground="#222222", highlightthickness=1)
+        self.console.pack(pady=(5, 15), padx=15, fill="both", expand=True)
+        self.console.insert(tk.END, "[*] GhostWave Initialized...\n")
+        self.console.config(state=tk.DISABLED)
         
         self.update_ui()
 
@@ -165,9 +171,18 @@ class App(tk.Tk):
                 req = urllib.request.Request(url, data=encoded_data)
                 req.add_header('User-Agent', 'Java-http-client/26')
                 req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-                urllib.request.urlopen(req, timeout=5)
-            except Exception:
-                pass
+                
+                self.log_msg(f"\n[+] POST /license/release.do")
+                self.log_msg(f"[*] Payload: {data}")
+                
+                response = urllib.request.urlopen(req, timeout=5)
+                status = response.getcode()
+                resp_body = response.read().decode('utf-8').replace('\n', '').strip()
+                
+                self.log_msg(f"[+] Status: {status} OK")
+                self.log_msg(f"[+] Response: {resp_body}")
+            except Exception as e:
+                self.log_msg(f"[-] API Error: {str(e)}")
 
         try:
             with open(hosts, 'r') as f:
@@ -193,6 +208,14 @@ class App(tk.Tk):
             pass
             
         self.is_loading = False
+
+    def log_msg(self, msg):
+        def _log():
+            self.console.config(state=tk.NORMAL)
+            self.console.insert(tk.END, msg + "\n")
+            self.console.see(tk.END)
+            self.console.config(state=tk.DISABLED)
+        self.after(0, _log)
 
     def animate_loading(self):
         if not self.is_loading:
