@@ -26,4 +26,21 @@ pyinstaller --onefile --windowed --uac-admin --name "GhostWave" --icon "ghostwav
 ## Preview
 ![App in Use](Screenshot.png)
 
+## Historical Data Downloader
+Separately included is a script that pulls historical bar and tick data straight from MotiveWave's S3 servers. No login required.
+
+```bash
+# List available data for a symbol
+python src/data_downloader.py ENQU6.CME --list
+
+# Download all data
+python src/data_downloader.py ENQU6.CME
+
+# Download only bar data
+python src/data_downloader.py ENQU6.CME --type bar
+
+# Download only tick data
+python src/data_downloader.py ENQU6.CME --type tick
+```
+
 yeah this gives you edge too
