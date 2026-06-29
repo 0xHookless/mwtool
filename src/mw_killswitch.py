@@ -18,7 +18,7 @@ block_entries = [
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.geometry("400x330")
+        self.geometry("400x520")
         self.configure(bg="#0a0a0a")
         self.overrideredirect(True)
         
@@ -69,9 +69,33 @@ class App(tk.Tk):
         self.desc_lbl = tk.Label(self, textvariable=self.desc_var, font=("Segoe UI", 9), bg="#0a0a0a", fg="#777777")
         self.desc_lbl.pack(pady=5)
         
+        # Data Downloader Section
+        dl_frame = tk.Frame(self, bg="#0a0a0a")
+        dl_frame.pack(pady=(10, 0), fill="x", padx=20)
+        
+        tk.Label(dl_frame, text="HISTORICAL DATA DOWNLOADER", font=("Segoe UI", 8, "bold"), bg="#0a0a0a", fg="#555555").grid(row=0, column=0, columnspan=3, pady=(0, 5), sticky="w")
+        
+        tk.Label(dl_frame, text="Symbol:", font=("Segoe UI", 8), bg="#0a0a0a", fg="#aaaaaa").grid(row=1, column=0, sticky="w", pady=2)
+        self.sym_var = tk.StringVar(value="ENQU6.CME")
+        self.sym_entry = tk.Entry(dl_frame, textvariable=self.sym_var, font=("Segoe UI", 9), bg="#1a1a1a", fg="#ffffff", bd=1, relief="solid", insertbackground="white", width=15)
+        self.sym_entry.grid(row=1, column=1, sticky="w", padx=5)
+
+        tk.Label(dl_frame, text="Type:", font=("Segoe UI", 8), bg="#0a0a0a", fg="#aaaaaa").grid(row=2, column=0, sticky="w", pady=2)
+        self.type_var = tk.StringVar(value="all")
+        type_opts = ["all", "bar", "tick"]
+        self.type_menu = tk.OptionMenu(dl_frame, self.type_var, *type_opts)
+        self.type_menu.config(bg="#1a1a1a", fg="#ffffff", bd=1, relief="solid", highlightthickness=0, font=("Segoe UI", 8))
+        self.type_menu["menu"].config(bg="#1a1a1a", fg="#ffffff")
+        self.type_menu.grid(row=2, column=1, sticky="w", padx=5)
+
+        self.dl_btn = tk.Button(dl_frame, text="DOWNLOAD", font=("Segoe UI", 8, "bold"), 
+                        bg="#222222", fg="#ffffff", activebackground="#333333", activeforeground="#ffffff", 
+                        bd=1, relief="solid", cursor="hand2", width=12, command=self.start_download)
+        self.dl_btn.grid(row=1, column=2, rowspan=2, padx=10, sticky="nsew", pady=2)
+
         # Console output
-        self.console = tk.Text(self, bg="#0e0e0e", fg="#999999", font=("Segoe UI", 7), bd=0, relief="flat", highlightthickness=0, height=4)
-        self.console.pack(pady=(0, 10), padx=20, fill="x")
+        self.console = tk.Text(self, bg="#0e0e0e", fg="#999999", font=("Segoe UI", 7), bd=0, relief="flat", highlightthickness=0, height=8)
+        self.console.pack(pady=(15, 10), padx=20, fill="x")
         self.console.insert(tk.END, "Ready.\n")
         self.console.config(state=tk.DISABLED)
         
@@ -207,6 +231,60 @@ class App(tk.Tk):
         except Exception:
             pass
             
+        self.is_loading = False
+
+    def start_download(self):
+        if self.is_loading: return
+        self.is_loading = True
+        self.dl_btn.config(state=tk.DISABLED, text="DOWNLOADING...")
+        threading.Thread(target=self.do_download, daemon=True).start()
+
+    def do_download(self):
+        symbol = self.sym_var.get().strip()
+        dtype = self.type_var.get()
+        provider = "CQG"
+        out_dir = os.path.join(os.getcwd(), "historical_data", provider, symbol)
+        
+        self.log_msg(f"\n[INFO] Fetching index for {symbol}...")
+        
+        try:
+            import json
+            import urllib.request
+            
+            BASE = "https://s3-us-west-2.amazonaws.com/elasticbeanstalk-us-west-2-200256718728/historical_data"
+            HEADERS = {"User-Agent": "Java/26", "Accept": "*/*", "Connection": "keep-alive"}
+            
+            url = f"{BASE}/{provider}/{symbol}/index.json"
+            req = urllib.request.Request(url, headers=HEADERS)
+            resp = urllib.request.urlopen(req, timeout=15)
+            index = json.loads(resp.read().decode("utf-8"))
+            
+            files = [f for f in index if f != "index.json"]
+            if dtype == "bar":
+                files = [f for f in files if "bar_data" in f]
+            elif dtype == "tick":
+                files = [f for f in files if "tick_data" in f]
+                
+            os.makedirs(out_dir, exist_ok=True)
+            self.log_msg(f"[INFO] Found {len(files)} files. Starting download...")
+            
+            total_kb = 0
+            for i, filename in enumerate(files, 1):
+                furl = f"{BASE}/{provider}/{symbol}/{filename}"
+                freq = urllib.request.Request(furl, headers=HEADERS)
+                fresp = urllib.request.urlopen(freq, timeout=30)
+                path = os.path.join(out_dir, filename)
+                with open(path, "wb") as f:
+                    f.write(fresp.read())
+                kb = os.path.getsize(path) / 1024
+                total_kb += kb
+                self.log_msg(f"  [{i}/{len(files)}] {filename} ({kb:.1f} KB)")
+                
+            self.log_msg(f"[SUCCESS] Saved {total_kb/1024:.1f} MB to {out_dir}")
+        except Exception as e:
+            self.log_msg(f"[ERROR] Download failed: {str(e)}")
+            
+        self.after(0, lambda: self.dl_btn.config(state=tk.NORMAL, text="DOWNLOAD"))
         self.is_loading = False
 
     def log_msg(self, msg):
