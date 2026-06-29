@@ -135,6 +135,11 @@ class App(tk.Tk):
         self.build = "640"
         self.version = "7.0.26"
         self.mitm_proc = None
+        # Download Progress
+        self.prog_var = tk.DoubleVar(value=0.0)
+        self.prog_bar = tk.Canvas(self, height=4, bg="#1a1a1a", highlightthickness=0)
+        self.prog_bar.pack(fill="x", side="bottom")
+        self.prog_rect = self.prog_bar.create_rectangle(0, 0, 0, 4, fill="#00ffcc", width=0)
         
         self.load_config()
         self.update_ui()
@@ -247,21 +252,29 @@ addons = [CaptureRelease()]
         # Determine mitmdump path
         mitmdump_exe = "mitmdump"
         # Check if mitmdump is in path or in local bin folder
-        if subprocess.run(["where", "mitmdump"], capture_output=True).returncode != 0:
+        if subprocess.run(["where", "mitmdump"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW).returncode != 0:
             local_bin = os.path.join(app_dir, "bin")
             mitmdump_exe = os.path.join(local_bin, "mitmdump.exe")
             if not os.path.exists(mitmdump_exe):
-                self.log_msg("[SETUP] mitmproxy not found. Downloading portable version...")
+                self.log_msg("[SETUP] Downloading mitmproxy backend...")
+                self.btn.config(text="DOWNLOADING BACKEND...", state=tk.DISABLED)
                 try:
                     os.makedirs(local_bin, exist_ok=True)
                     import urllib.request
                     import zipfile
                     
-                    # Direct static link to a known good older release
                     zip_url = "https://downloads.mitmproxy.org/9.0.1/mitmproxy-9.0.1-windows.zip"
                     zip_path = os.path.join(local_bin, "mitmproxy.zip")
                     
-                    urllib.request.urlretrieve(zip_url, zip_path)
+                    def report_hook(count, block_size, total_size):
+                        if total_size > 0:
+                            percent = min(1.0, (count * block_size) / total_size)
+                            self.prog_var.set(percent)
+                            self.prog_bar.coords(self.prog_rect, 0, 0, self.winfo_width() * percent, 4)
+                            self.update_idletasks()
+
+                    urllib.request.urlretrieve(zip_url, zip_path, reporthook=report_hook)
+                    self.prog_bar.coords(self.prog_rect, 0, 0, self.winfo_width(), 4)
                     self.log_msg("[SETUP] Extracting mitmproxy...")
                     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                         zip_ref.extract("mitmdump.exe", local_bin)
@@ -281,7 +294,20 @@ addons = [CaptureRelease()]
                 startupinfo=startupinfo,
                 cwd=app_dir
             )
+            
+            # Trust the mitmproxy certificate automatically
+            def trust_cert():
+                import time
+                cert_path = os.path.expanduser(r"~\.mitmproxy\mitmproxy-ca-cert.cer")
+                for _ in range(10):
+                    if os.path.exists(cert_path):
+                        subprocess.run(["certutil", "-addstore", "root", cert_path], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                        break
+                    time.sleep(1)
+            threading.Thread(target=trust_cert, daemon=True).start()
+
             self.log_msg("[SETUP] Proxy running. PLEASE START MOTIVEWAVE, THEN CLOSE IT.")
+            self.btn.config(text="WAITING FOR CAPTURE...", state=tk.DISABLED)
             
             threading.Thread(target=self.monitor_setup, args=(addon_path,), daemon=True).start()
             
@@ -350,9 +376,10 @@ addons = [CaptureRelease()]
             return False
 
     def update_ui(self):
+        self.prog_bar.coords(self.prog_rect, 0, 0, 0, 4)
         if not self.config_loaded:
             self.status_var.set("STATUS: SETUP REQUIRED")
-            self.btn.config(text="WAITING FOR LICENSE CAPTURE...", bg="#1a1a1a", state=tk.DISABLED)
+            self.btn.config(text="INITIALIZING...", bg="#1a1a1a", state=tk.DISABLED)
             self.desc_var.set("Please START MotiveWave, then CLOSE it to capture details.\nGhostWave is intercepting the JVM traffic.")
             return
 
