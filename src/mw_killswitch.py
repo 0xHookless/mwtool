@@ -377,13 +377,41 @@ class App(tk.Tk):
         
         try:
             ssl_client.settimeout(10)
-            data = ssl_client.recv(16384)
-            if not data:
+            
+            # Read request headers
+            req_data = b""
+            while b"\r\n\r\n" not in req_data:
+                chunk = ssl_client.recv(4096)
+                if not chunk:
+                    break
+                req_data += chunk
+                
+            if not req_data:
                 return
+                
+            # Extract Content-Length if present to read full body
+            headers_part = req_data.split(b"\r\n\r\n", 1)[0].decode("utf-8", errors="replace")
+            content_length = 0
+            for line in headers_part.split("\r\n"):
+                if line.lower().startswith("content-length:"):
+                    try:
+                        content_length = int(line.split(":")[1].strip())
+                    except:
+                        pass
+                        
+            # Read remainder of body
+            body_part = req_data.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in req_data else b""
+            while len(body_part) < content_length:
+                chunk = ssl_client.recv(4096)
+                if not chunk:
+                    break
+                req_data += chunk
+                body_part += chunk
             
-            text = data.decode("utf-8", errors="replace")
+            text = req_data.decode("utf-8", errors="replace")
+            self.log_msg(f"[DEBUG] Intercepted request to motivewave.com ({len(text)} bytes)")
             
-            # Check for license credentials in POST body
+            # Check for license credentials anywhere in the request
             if "profile_id" in text and "machine_id" in text:
                 body = text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in text else text
                 
@@ -430,6 +458,7 @@ class App(tk.Tk):
                     self.proxy_running = False
             
             # Forward to real server regardless
+            data = req_data
             try:
                 real_ctx = ssl.create_default_context()
                 real_ctx.check_hostname = False
