@@ -3,9 +3,9 @@
   <h1>Gw</h1>
 </div>
 
-A lightweight utility to quickly block MotiveWave's license heartbeat, allowing you to use your license on another machine without having to close the app on your current one.
+App to quickly block Motivewave's heartbeat and emulate the "license no longer in use" api request, allowing you to use your license on another machine without having to close the app on your current one.
 
-or share ur license with a friend and use it at the same time as them lol
+or share ur license with a friend and use it at the same time as them.
 
 ## How it works
 MotiveWave pings its licensing server every 60 seconds. This tool simply adds a local block in your Windows `hosts` file to drop that connection. The server assumes your PC went offline and releases the license to your home PC. MotiveWave keeps running perfectly fine offline in the background on your laptop
