@@ -232,8 +232,8 @@ class App(tk.Tk):
                 .sign(ca_key, hashes.SHA256())
             )
             
-            # Save CA cert
-            ca_cert_path = os.path.join(app_dir, "ghostwave_ca.cer")
+            # Save CA cert to a stable location, not the PyInstaller temp dir
+            ca_cert_path = os.path.join(mw_dir, "ghostwave_ca.cer")
             with open(ca_cert_path, "wb") as f:
                 f.write(ca_cert.public_bytes(serialization.Encoding.DER))
                 
@@ -273,9 +273,12 @@ class App(tk.Tk):
                     if result.returncode == 0:
                         self.log_msg("[SETUP] SSL cert injected into Java keystore.")
                     else:
-                        self.log_msg(f"[WARNING] Keystore injection failed: {result.stderr.decode('utf-8', 'ignore')}")
+                        err = result.stderr.decode('utf-8', 'ignore').strip()
+                        self.log_msg(f"[ERROR] Keystore injection failed: {err}")
+                else:
+                    self.log_msg("[WARNING] Could not find MotiveWave keytool or cacerts.")
             except Exception as e:
-                self.log_msg(f"[WARNING] Could not inject Java keystore: {e}")
+                self.log_msg(f"[ERROR] Java keystore exception: {e}")
                 
             self.log_msg("[SETUP] SSL certificate installed.")
             
