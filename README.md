@@ -1,6 +1,6 @@
 <div align="center">
   <img src="ghostwave.png" alt="GhostWave Logo" width="200"/>
-  <h1>GhostWave</h1>
+  <h1>Gw</h1>
 </div>
 
 A lightweight utility to quickly block MotiveWave's license heartbeat, allowing you to use your license on another machine without having to close the app on your current one.
@@ -25,3 +25,5 @@ pyinstaller --onefile --windowed --uac-admin --name "GhostWave" --icon "ghostwav
 
 ## Preview
 ![App in Use](Screenshot.png)
+
+yeah this gives you edge too
