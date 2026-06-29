@@ -149,14 +149,11 @@ class App(tk.Tk):
 
     def destroy(self):
         try:
+            if hasattr(self, 'proxy_running'):
+                self.proxy_running = False
             self.restore_startup_ini()
         except:
             pass
-        if hasattr(self, 'mitm_proc') and self.mitm_proc:
-            try:
-                self.mitm_proc.terminate()
-            except:
-                pass
         super().destroy()
 
     def load_config(self):
@@ -205,193 +202,330 @@ class App(tk.Tk):
         else:
             self.log_msg("[WARNING] MotiveWave startup.ini not found. Proxy might not be picked up.")
 
-        self.log_msg("[SETUP] Starting mitmdump backend...")
+        self.log_msg("[SETUP] Starting built-in proxy...")
         
-        # Determine mitmdump path
-        mitmdump_exe = "mitmdump"
-        # Check if mitmdump is in path or in local bin folder
-        if subprocess.run(["where", "mitmdump"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW).returncode != 0:
-            local_bin = os.path.join(app_dir, "bin")
-            mitmdump_exe = os.path.join(local_bin, "mitmdump.exe")
-            if not os.path.exists(mitmdump_exe):
-                self.log_msg("[SETUP] Downloading mitmproxy backend...")
-                self.after(0, lambda: self.btn.config(text="DOWNLOADING BACKEND...", state=tk.DISABLED))
-                try:
-                    os.makedirs(local_bin, exist_ok=True)
-                    import urllib.request
-                    import zipfile
-                    
-                    zip_url = "https://downloads.mitmproxy.org/9.0.1/mitmproxy-9.0.1-windows.zip"
-                    zip_path = os.path.join(local_bin, "mitmproxy.zip")
-                    
-                    def report_hook(count, block_size, total_size):
-                        if total_size > 0:
-                            percent = min(1.0, (count * block_size) / total_size)
-                            self.prog_var.set(percent)
-                            try:
-                                self.prog_bar.coords(self.prog_rect, 0, 0, self.winfo_width() * percent, 4)
-                                self.update_idletasks()
-                            except:
-                                pass
-
-                    urllib.request.urlretrieve(zip_url, zip_path, reporthook=report_hook)
-                    try:
-                        self.prog_bar.coords(self.prog_rect, 0, 0, self.winfo_width(), 4)
-                    except:
-                        pass
-                    self.log_msg("[SETUP] Extracting mitmproxy...")
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(local_bin)
-                    os.remove(zip_path)
-                    self.log_msg("[SETUP] mitmproxy ready.")
-                except Exception as e:
-                    self.log_msg(f"[ERROR] Failed to download mitmproxy: {e}")
-                    self.restore_startup_ini()
-                    return
-
         try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            # Run mitmdump with verbose flow detail, merge stderr into stdout
-            # so we can read ALL output from one pipe
-            self.mitm_proc = subprocess.Popen(
-                [mitmdump_exe, "-p", "8080", "--ssl-insecure", "--set", "flow_detail=4"],
-                startupinfo=startupinfo,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=app_dir
+            import socket
+            import ssl
+            import select
+            import datetime
+            import urllib.parse
+            import re
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            
+            # Generate a CA certificate
+            self.log_msg("[SETUP] Generating SSL certificates...")
+            ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "GhostWave CA")])
+            ca_cert = (
+                x509.CertificateBuilder()
+                .subject_name(ca_name)
+                .issuer_name(ca_name)
+                .public_key(ca_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.datetime.utcnow())
+                .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+                .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                .sign(ca_key, hashes.SHA256())
             )
             
-            # Trust the mitmproxy certificate automatically
-            def trust_cert():
-                import time
-                cert_path = os.path.join(os.path.expanduser("~"), ".mitmproxy", "mitmproxy-ca-cert.cer")
-                for _ in range(20):
-                    if os.path.exists(cert_path):
-                        subprocess.run(["certutil", "-addstore", "root", cert_path], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                        self.log_msg("[SETUP] SSL certificate installed.")
-                        break
-                    time.sleep(1)
-            threading.Thread(target=trust_cert, daemon=True).start()
-
-            self.log_msg("[SETUP] Proxy running. PLEASE START MOTIVEWAVE, THEN CLOSE IT.")
+            # Save CA cert and install into Windows trust store
+            ca_cert_path = os.path.join(app_dir, "ghostwave_ca.cer")
+            with open(ca_cert_path, "wb") as f:
+                f.write(ca_cert.public_bytes(serialization.Encoding.DER))
+            subprocess.run(["certutil", "-addstore", "root", ca_cert_path],
+                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.log_msg("[SETUP] SSL certificate installed.")
+            
+            # Generate a cert for motivewave.com signed by our CA
+            site_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            site_cert = (
+                x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "www.motivewave.com")]))
+                .issuer_name(ca_name)
+                .public_key(site_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(datetime.datetime.utcnow())
+                .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+                .add_extension(
+                    x509.SubjectAlternativeName([
+                        x509.DNSName("www.motivewave.com"),
+                        x509.DNSName("motivewave.com"),
+                        x509.DNSName("*.motivewave.com"),
+                    ]),
+                    critical=False,
+                )
+                .sign(ca_key, hashes.SHA256())
+            )
+            
+            # Write cert and key to temp files for SSL context
+            site_cert_pem = site_cert.public_bytes(serialization.Encoding.PEM)
+            site_key_pem = site_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption()
+            )
+            cert_file = os.path.join(app_dir, "_mw_cert.pem")
+            key_file = os.path.join(app_dir, "_mw_key.pem")
+            with open(cert_file, "wb") as f:
+                f.write(site_cert_pem)
+            with open(key_file, "wb") as f:
+                f.write(site_key_pem)
+            
+            # Create SSL context for MITM
+            mitm_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            mitm_ctx.load_cert_chain(cert_file, key_file)
+            
+            # Start proxy server
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 8080))
+            srv.listen(10)
+            srv.settimeout(1.0)
+            
+            self.proxy_running = True
+            self.proxy_captured = False
+            self.log_msg("[SETUP] Proxy listening on 127.0.0.1:8080")
+            self.log_msg("[SETUP] PLEASE START MOTIVEWAVE, THEN CLOSE IT.")
             self.after(0, lambda: self.btn.config(text="WAITING FOR CAPTURE...", state=tk.DISABLED))
             
-            threading.Thread(target=self.monitor_setup_stdout, daemon=True).start()
-            
-        except Exception as e:
-            self.log_msg(f"[ERROR] Could not start mitmdump: {e}")
-            self.restore_startup_ini()
-
-    def restore_startup_ini(self):
-        appdata = os.environ.get('APPDATA', '')
-        mw_dir = os.path.join(appdata, 'MotiveWave')
-        startup_ini = os.path.join(mw_dir, 'startup.ini')
-        startup_bak = os.path.join(mw_dir, 'startup.ini.bak')
-        if os.path.exists(startup_bak):
-            try:
-                import shutil
-                shutil.copy2(startup_bak, startup_ini)
-                os.remove(startup_bak)
-                self.log_msg("[SETUP] Restored original MotiveWave startup.ini")
-            except Exception as e:
-                pass
-
-    def monitor_setup_stdout(self):
-        """Read mitmdump output and look for license credentials."""
-        import time
-        import re
-        import urllib.parse
-        
-        captured_profile = None
-        captured_machine = None
-        captured_build = "640"
-        captured_version = "7.0.26"
-        
-        try:
-            while self.mitm_proc:
-                # Check if process died
-                if self.mitm_proc.poll() is not None:
-                    # Read any remaining output
-                    try:
-                        remaining = self.mitm_proc.stdout.read()
-                        if remaining:
-                            text = remaining.decode("utf-8", errors="replace")
-                            self.log_msg(f"[DEBUG] mitmdump output: {text[:500]}")
-                    except:
-                        pass
-                    self.log_msg("[ERROR] Proxy process exited. Restarting may be needed.")
-                    break
-                
-                line = self.mitm_proc.stdout.readline()
-                if not line:
-                    # Empty read but process alive — just wait a bit
-                    time.sleep(0.1)
-                    continue
-                    
+            while self.proxy_running:
                 try:
-                    text = line.decode("utf-8", errors="replace").strip()
+                    client_sock, addr = srv.accept()
+                    threading.Thread(
+                        target=self._handle_proxy_conn,
+                        args=(client_sock, mitm_ctx),
+                        daemon=True
+                    ).start()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+            
+            srv.close()
+            
+            # Cleanup temp files
+            for f in [cert_file, key_file, ca_cert_path]:
+                try:
+                    os.remove(f)
                 except:
-                    continue
-                
-                if not text:
-                    continue
-                
-                # Look for profile_id and machine_id in the output
-                if "profile_id" in text or "machine_id" in text:
-                    # Try regex extraction
-                    if not captured_profile:
-                        m = re.search(r'profile_id=([^&\s]+)', text)
-                        if m:
-                            captured_profile = urllib.parse.unquote(m.group(1))
-                    if not captured_machine:
-                        m = re.search(r'machine_id=([^&\s]+)', text)
-                        if m:
-                            captured_machine = urllib.parse.unquote(m.group(1))
+                    pass
                     
-                    # Also try URL-encoded form data parsing
-                    try:
-                        params = urllib.parse.parse_qs(text)
-                        if "profile_id" in params:
-                            captured_profile = params["profile_id"][0]
-                        if "machine_id" in params:
-                            captured_machine = params["machine_id"][0]
-                        if "build" in params:
-                            captured_build = params["build"][0]
-                        if "version" in params:
-                            captured_version = params["version"][0]
-                    except:
-                        pass
-                    
-                    if captured_profile and captured_machine:
-                        self.log_msg("[SETUP] Captured credentials!")
-                        cfg = {
-                            "profile_id": captured_profile,
-                            "machine_id": captured_machine,
-                            "build": captured_build,
-                            "version": captured_version
-                        }
-                        with open(config_path, "w") as f:
-                            json.dump(cfg, f, indent=4)
-                        break
-                        
         except Exception as e:
-            self.log_msg(f"[ERROR] Monitor error: {e}")
-            
-        # Cleanup
-        if self.mitm_proc:
-            try:
-                self.mitm_proc.terminate()
-            except:
-                pass
-            self.mitm_proc = None
+            self.log_msg(f"[ERROR] Proxy failed: {e}")
         
-        # Only restore startup.ini AFTER we captured, or if process died
         self.restore_startup_ini()
-            
         if self.load_config():
             self.after(0, self.update_ui)
+    
+    def _handle_proxy_conn(self, client_sock, mitm_ctx):
+        """Handle a single proxy connection."""
+        import socket
+        import ssl
+        import select
+        import urllib.parse
+        import re
+        
+        try:
+            client_sock.settimeout(10)
+            data = client_sock.recv(8192)
+            if not data:
+                client_sock.close()
+                return
+            
+            first_line = data.split(b"\r\n")[0].decode("utf-8", errors="replace")
+            
+            if first_line.upper().startswith("CONNECT"):
+                # HTTPS CONNECT tunnel
+                parts = first_line.split()
+                host_port = parts[1] if len(parts) > 1 else ""
+                host = host_port.split(":")[0]
+                port = int(host_port.split(":")[1]) if ":" in host_port else 443
+                
+                # Tell client the tunnel is established
+                client_sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                
+                if "motivewave" in host.lower():
+                    self._mitm_connection(client_sock, host, port, mitm_ctx)
+                else:
+                    self._tunnel_connection(client_sock, host, port)
+            else:
+                # Plain HTTP — just forward
+                self._forward_http(client_sock, data)
+        except Exception:
+            pass
+        finally:
+            try:
+                client_sock.close()
+            except:
+                pass
+    
+    def _mitm_connection(self, client_sock, host, port, mitm_ctx):
+        """MITM an HTTPS connection to motivewave.com."""
+        import socket
+        import ssl
+        import urllib.parse
+        import re
+        
+        try:
+            ssl_client = mitm_ctx.wrap_socket(client_sock, server_side=True)
+        except Exception:
+            return
+        
+        try:
+            ssl_client.settimeout(10)
+            data = ssl_client.recv(16384)
+            if not data:
+                return
+            
+            text = data.decode("utf-8", errors="replace")
+            
+            # Check for license credentials in POST body
+            if "profile_id" in text and "machine_id" in text:
+                body = text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in text else text
+                
+                captured_profile = None
+                captured_machine = None
+                captured_build = "640"
+                captured_version = "7.0.26"
+                
+                # Try URL-encoded form parsing
+                try:
+                    params = urllib.parse.parse_qs(body.strip())
+                    if "profile_id" in params:
+                        captured_profile = params["profile_id"][0]
+                    if "machine_id" in params:
+                        captured_machine = params["machine_id"][0]
+                    if "build" in params:
+                        captured_build = params["build"][0]
+                    if "version" in params:
+                        captured_version = params["version"][0]
+                except:
+                    pass
+                
+                # Fallback regex
+                if not captured_profile:
+                    m = re.search(r'profile_id=([^&\s]+)', body)
+                    if m:
+                        captured_profile = urllib.parse.unquote(m.group(1))
+                if not captured_machine:
+                    m = re.search(r'machine_id=([^&\s]+)', body)
+                    if m:
+                        captured_machine = urllib.parse.unquote(m.group(1))
+                
+                if captured_profile and captured_machine:
+                    cfg = {
+                        "profile_id": captured_profile,
+                        "machine_id": captured_machine,
+                        "build": captured_build,
+                        "version": captured_version
+                    }
+                    with open(config_path, "w") as f:
+                        json.dump(cfg, f, indent=4)
+                    self.log_msg("[SETUP] Captured credentials!")
+                    self.proxy_captured = True
+                    self.proxy_running = False
+            
+            # Forward to real server regardless
+            try:
+                real_ctx = ssl.create_default_context()
+                real_ctx.check_hostname = False
+                real_ctx.verify_mode = ssl.CERT_NONE
+                real_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                real_sock.settimeout(10)
+                real_ssl = real_ctx.wrap_socket(real_sock, server_hostname=host)
+                real_ssl.connect((host, port))
+                real_ssl.sendall(data)
+                
+                while True:
+                    try:
+                        resp = real_ssl.recv(8192)
+                        if not resp:
+                            break
+                        ssl_client.sendall(resp)
+                    except:
+                        break
+                real_ssl.close()
+            except:
+                # If we can't reach the real server, send a minimal response
+                ssl_client.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                
+        except Exception:
+            pass
+        finally:
+            try:
+                ssl_client.close()
+            except:
+                pass
+    
+    def _tunnel_connection(self, client_sock, host, port):
+        """Transparent tunnel for non-motivewave connections."""
+        import socket
+        import select
+        
+        remote_sock = None
+        try:
+            remote_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            remote_sock.settimeout(10)
+            remote_sock.connect((host, port))
+            
+            socks = [client_sock, remote_sock]
+            while self.proxy_running:
+                readable, _, errs = select.select(socks, [], socks, 2)
+                if errs:
+                    break
+                for s in readable:
+                    data = s.recv(8192)
+                    if not data:
+                        return
+                    if s is client_sock:
+                        remote_sock.sendall(data)
+                    else:
+                        client_sock.sendall(data)
+        except:
+            pass
+        finally:
+            if remote_sock:
+                try:
+                    remote_sock.close()
+                except:
+                    pass
+    
+    def _forward_http(self, client_sock, initial_data):
+        """Forward plain HTTP request."""
+        import socket
+        
+        try:
+            # Parse host from Host header
+            headers = initial_data.decode("utf-8", errors="replace")
+            host = "127.0.0.1"
+            port = 80
+            for line in headers.split("\r\n"):
+                if line.lower().startswith("host:"):
+                    hp = line.split(":", 1)[1].strip()
+                    if ":" in hp:
+                        host = hp.split(":")[0]
+                        port = int(hp.split(":")[1])
+                    else:
+                        host = hp
+                    break
+            
+            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            remote.settimeout(10)
+            remote.connect((host, port))
+            remote.sendall(initial_data)
+            
+            while True:
+                resp = remote.recv(8192)
+                if not resp:
+                    break
+                client_sock.sendall(resp)
+            remote.close()
+        except:
+            pass
 
     def get_pos(self, e):
         self.xwin = self.winfo_x() - e.x_root
