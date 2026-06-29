@@ -3,97 +3,141 @@ import sys
 import tkinter as tk
 import subprocess
 import ctypes
+import threading
 
 hosts = r"C:\Windows\System32\drivers\etc\hosts"
 line = "127.0.0.1 www.motivewave.com"
 marker = "# MW_BLOCK"
 
-def check():
-    try:
-        with open(hosts, 'r') as f:
-            return line in f.read()
-    except:
-        return False
-
-def toggle():
-    blocked = check()
-    try:
-        with open(hosts, 'r') as f:
-            data = f.readlines()
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.geometry("400x260")
+        self.configure(bg="#0a0a0a")
+        self.overrideredirect(True)
         
-        with open(hosts, 'w') as f:
-            for d in data:
-                if marker not in d and line not in d:
-                    f.write(d)
-            if not blocked:
-                f.write(f"\n{line} {marker}\n")
+        self.is_loading = False
+        self.angle = 0
         
-        subprocess.run(["ipconfig", "/flushdns"], creationflags=subprocess.CREATE_NO_WINDOW)
-        update()
-    except Exception as e:
-        pass # skip error handling
+        # taskbar hack
+        self.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+        style = style & ~0x00000080 | 0x00040000
+        ctypes.windll.user32.SetWindowLongW(hwnd, -20, style)
+        self.withdraw()
+        self.deiconify()
 
-def get_pos(e):
-    root.xwin = root.winfo_x() - e.x_root
-    root.ywin = root.winfo_y() - e.y_root
+        # custom drag bar
+        top = tk.Frame(self, bg="#0a0a0a", height=30)
+        top.pack(fill="x")
+        top.bind("<Button-1>", self.get_pos)
+        top.bind("<B1-Motion>", self.move_app)
 
-def move_app(e):
-    root.geometry(f"+{e.x_root + root.xwin}+{e.y_root + root.ywin}")
+        close_btn = tk.Button(top, text="✕", bg="#0a0a0a", fg="#666666", bd=0, 
+                              activebackground="#ff3333", activeforeground="white", 
+                              command=self.destroy, font=("Arial", 12))
+        close_btn.pack(side="right", padx=10)
 
-def update():
-    blocked = check()
-    if blocked:
-        status_var.set("STATUS: BLOCKED")
-        btn.config(text="RESTORE CONNECTION", bg="#1a1a1a")
-        desc_var.set("MotiveWave heartbeat is currently blocked.\nThe license is released for your home PC.")
-    else:
-        status_var.set("STATUS: ACTIVE")
-        btn.config(text="DROP CONNECTION", bg="#1a1a1a")
-        desc_var.set("MotiveWave heartbeat is active.\nDrop connection to free up the license.")
+        title_lbl = tk.Label(top, text="GhostWave", bg="#0a0a0a", fg="#444444", font=("Arial", 8))
+        title_lbl.pack(side="left", padx=12, pady=5)
+        title_lbl.bind("<Button-1>", self.get_pos)
+        title_lbl.bind("<B1-Motion>", self.move_app)
 
-root = tk.Tk()
-root.geometry("400x240")
-root.configure(bg="#0a0a0a")
-root.overrideredirect(True) # hide standard title bar
+        # Status Label
+        self.status_var = tk.StringVar()
+        self.status_lbl = tk.Label(self, textvariable=self.status_var, font=("Segoe UI", 16, "bold"), bg="#0a0a0a", fg="#ffffff")
+        self.status_lbl.pack(pady=(15, 5))
 
-# hack to force borderless window into taskbar
-root.update_idletasks()
-hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
-style = style & ~0x00000080 | 0x00040000
-ctypes.windll.user32.SetWindowLongW(hwnd, -20, style)
-root.withdraw()
-root.deiconify()
+        # Canvas for real loading spinner & glowing dot
+        self.canvas = tk.Canvas(self, width=200, height=40, bg="#0a0a0a", bd=0, highlightthickness=0)
+        self.canvas.pack()
 
-# custom drag bar
-top = tk.Frame(root, bg="#0a0a0a", height=30)
-top.pack(fill="x")
-top.bind("<Button-1>", get_pos)
-top.bind("<B1-Motion>", move_app)
+        # Button
+        self.btn = tk.Button(self, text="...", font=("Segoe UI", 10, "bold"), 
+                        bg="#1a1a1a", fg="#ffffff", activebackground="#2a2a2a", activeforeground="#ffffff", 
+                        bd=1, relief="solid", cursor="hand2", width=30, height=2, command=self.start_toggle)
+        self.btn.pack(pady=10)
 
-close_btn = tk.Button(top, text="✕", bg="#0a0a0a", fg="#666666", bd=0, 
-                      activebackground="#ff3333", activeforeground="white", 
-                      command=root.destroy, font=("Arial", 12))
-close_btn.pack(side="right", padx=10)
+        self.desc_var = tk.StringVar()
+        self.desc_lbl = tk.Label(self, textvariable=self.desc_var, font=("Segoe UI", 9), bg="#0a0a0a", fg="#777777")
+        self.desc_lbl.pack(pady=5)
+        
+        self.update_ui()
 
-title_lbl = tk.Label(top, text="GhostWave", bg="#0a0a0a", fg="#444444", font=("Arial", 8))
-title_lbl.pack(side="left", padx=12, pady=5)
-title_lbl.bind("<Button-1>", get_pos)
-title_lbl.bind("<B1-Motion>", move_app)
+    def get_pos(self, e):
+        self.xwin = self.winfo_x() - e.x_root
+        self.ywin = self.winfo_y() - e.y_root
 
-# ui elements
-status_var = tk.StringVar()
-status_lbl = tk.Label(root, textvariable=status_var, font=("Segoe UI", 16, "bold"), bg="#0a0a0a", fg="#ffffff")
-status_lbl.pack(pady=(25, 15))
+    def move_app(self, e):
+        self.geometry(f"+{e.x_root + self.xwin}+{e.y_root + self.ywin}")
 
-btn = tk.Button(root, text="DROP CONNECTION", font=("Segoe UI", 10, "bold"), 
-                bg="#1a1a1a", fg="#ffffff", activebackground="#2a2a2a", activeforeground="#ffffff", 
-                bd=1, relief="solid", cursor="hand2", width=30, height=2, command=toggle)
-btn.pack(pady=10)
+    def check(self):
+        try:
+            with open(hosts, 'r') as f:
+                return line in f.read()
+        except:
+            return False
 
-desc_var = tk.StringVar()
-desc_lbl = tk.Label(root, textvariable=desc_var, font=("Segoe UI", 9), bg="#0a0a0a", fg="#777777")
-desc_lbl.pack(pady=10)
+    def update_ui(self):
+        blocked = self.check()
+        self.canvas.delete("all")
+        if blocked:
+            self.status_var.set("STATUS: BLOCKED")
+            self.btn.config(text="RESTORE CONNECTION", bg="#1a1a1a", state=tk.NORMAL)
+            self.desc_var.set("MotiveWave heartbeat is currently blocked.\nThe license is released for your home PC.")
+            
+            # White glowing dot
+            self.canvas.create_oval(50, 10, 70, 30, outline="#333333", width=2) # Outer ring
+            self.canvas.create_oval(55, 15, 65, 25, fill="#ffffff", outline="") # Glowing core
+            self.canvas.create_text(125, 20, text="LICENSE FREE", fill="#ffffff", font=("Segoe UI", 10, "bold"))
+        else:
+            self.status_var.set("STATUS: ACTIVE")
+            self.btn.config(text="DROP CONNECTION", bg="#1a1a1a", state=tk.NORMAL)
+            self.desc_var.set("MotiveWave heartbeat is active.\nDrop connection to free up the license.")
+            
+    def start_toggle(self):
+        if self.is_loading: return
+        self.is_loading = True
+        self.btn.config(state=tk.DISABLED, text="WORKING...")
+        self.canvas.delete("all")
+        
+        # Spawn thread for the actual file/network operations so UI doesn't freeze
+        threading.Thread(target=self.do_toggle, daemon=True).start()
+        self.animate_loading()
 
-update()
-root.mainloop()
+    def do_toggle(self):
+        blocked = self.check()
+        try:
+            with open(hosts, 'r') as f:
+                data = f.readlines()
+            
+            with open(hosts, 'w') as f:
+                for d in data:
+                    if marker not in d and line not in d:
+                        f.write(d)
+                if not blocked:
+                    f.write(f"\n{line} {marker}\n")
+            
+            # The real loading work: flushing Windows DNS cache to ensure immediate disconnect
+            subprocess.run(["ipconfig", "/flushdns"], creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            pass
+            
+        self.is_loading = False
+
+    def animate_loading(self):
+        if not self.is_loading:
+            self.update_ui()
+            return
+            
+        self.canvas.delete("spinner")
+        self.angle = (self.angle + 25) % 360
+        self.canvas.create_arc(85, 5, 115, 35, start=self.angle, extent=270, outline="#ffffff", width=2, style=tk.ARC, tags="spinner")
+        
+        # 30ms frame loop
+        self.after(30, self.animate_loading)
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
