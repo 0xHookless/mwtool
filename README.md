@@ -27,7 +27,11 @@ pyinstaller --onefile --windowed --uac-admin --name "GhostWave" --icon "ghostwav
 ![App in Use](Screenshot.png)
 
 ## Historical Data Downloader
-Separately included is a script that pulls historical bar and tick data straight from MotiveWave's S3 servers. No login required.
+GhostWave now features a built-in historical data downloader in the GUI. You can pull historical bar and tick data straight from MotiveWave's S3 servers directly from the app interface, without any login required. 
+
+Simply enter the symbol (e.g., `ENQU6.CME`), select the data type (Bar, Tick, or All), and click **Download**. The files will be saved automatically to a `historical_data` folder in the same directory as the executable.
+
+You can also use the standalone Python script if you prefer the command line:
 
 ```bash
 # List available data for a symbol
