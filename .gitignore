@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# User-specific credentials
+config.json
+capture_addon.py
